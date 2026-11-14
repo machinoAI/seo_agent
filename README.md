@@ -5,7 +5,7 @@ opportunities and writes a report. Python · LangGraph · LangChain · FastAPI �
 Runs entirely on your machine — no Docker, database server or Redis needed.
 
 Design: [`seo_aeo_growth_agent_design.md`](seo_aeo_growth_agent_design.md) ·
-Status and what's pending: [`docs/progress.md`](docs/progress.md)
+How it works (diagrams, data flow, every step): [`docs/architecture.md`](docs/architecture.md)
 
 ## Quick start
 
@@ -103,7 +103,7 @@ Checkpoints (`data/checkpoints.db`) make interrupted runs resumable.
 `openai`, `anthropic`, `gemini`, `inception` (Mercury), via LangChain. Set `LLM_PROVIDER`,
 `LLM_MODEL` (blank = provider default) and `LLM_REASONING` (`default | none | low | medium
 | high`, or a provider-native value). Override per agent with `<AGENT>_LLM_*` or per run
-with the runner flags. Details: [`docs/progress.md`](docs/progress.md#llm-layer-how-switching-works).
+with the runner flags. Details: [`docs/architecture.md`](docs/architecture.md#6-llm-layer-srcllm).
 
 ## Layout
 
@@ -129,7 +129,7 @@ seo_agent/
 │   └── observability/      # structured logging
 ├── tests/unit/, tests/integration/
 ├── data/                   # local database, checkpoints and run outputs (git-ignored)
-└── docs/progress.md        # development tracker
+└── docs/architecture.md    # architecture diagrams and how a run works
 ```
 
 ## Production
@@ -145,7 +145,7 @@ and `API_KEY`, and inject secrets from a secret manager instead of `.env`.
 - **Agents** run tools and analyse evidence; they never call external services directly.
 - **Prompts:** only in `prompts/*.yaml`; keep them well-formed XML, declare every `${placeholder}`, bump `version` on each change.
 - **Schema changes:** `alembic revision --autogenerate -m "..."`.
-- **Progress:** update `docs/progress.md` with every change.
+- **Architecture doc:** when behaviour changes, update the matching section of `docs/architecture.md`.
 
 ## Dev commands
 
