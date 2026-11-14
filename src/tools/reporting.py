@@ -44,6 +44,16 @@ def _coverage_line(coverage: dict[str, Any], sources: dict[str, str]) -> str:
             f"{fetched} pages fetched")
         parts.append(f"{scope}: {coverage.get('html_pages_analyzed', 0)} HTML pages analysed, "
                      f"{coverage.get('error_pages', 0)} returned errors")
+        health = coverage.get("crawl_health") or {}
+        if health.get("stopped_early"):
+            parts.append(
+                f"**crawl stopped early**: the site kept returning server errors (first after "
+                f"{health.get('first_server_error_after_pages')} pages); "
+                f"{health.get('not_crawled', 0)} queued pages not crawled"
+            )
+        elif health.get("server_errors"):
+            parts.append(f"crawler slowed down to {health.get('max_delay_s')} s between requests "
+                         f"after {health['server_errors']} server errors")
     parts += [f"{name}: {status}" for name, status in sources.items()]
     return " · ".join(parts)
 

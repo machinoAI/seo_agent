@@ -152,6 +152,7 @@ async def node(state: WorkflowState) -> dict[str, Any]:
         ),
         "sitemap_urls_by_template": discovery_data.get("url_count_by_template"),
         "sampling": "homepage + sitemap URLs spread evenly across URL templates",
+        "crawl_health": stats.get("crawl_health"),
     }
 
     async with transaction() as session:

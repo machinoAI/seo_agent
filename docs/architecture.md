@@ -194,7 +194,7 @@ sequenceDiagram
 3. Output: final URL, redirect chain, status code, addresses. `start_url` = final URL if
    it stays on `site`/`www.site`; `allowed_hosts` = those two hosts.
 
-### Agent 1 — SEO audit (`agents/seo_audit.py`, prompt `seo_audit@v3`)
+### Agent 1 — SEO audit (`agents/seo_audit.py`, prompt `seo_audit@v4`)
 
 | # | Tool | What it does |
 |---|---|---|
@@ -210,7 +210,8 @@ HTTP errors, fetch failures, redirect chains; broken internal links, links to re
 noindex, canonical elsewhere/missing, blocked by robots; title missing/long/short/duplicate;
 description missing/long/duplicate; H1 missing/multiple; thin content; structured data
 missing/invalid; images without alt; missing `lang`; slow server response (>1,500 ms,
-crawler-observed); truncated pages.
+crawler-observed); truncated pages. Crawl health (server errors, slow-down, early stop, bot
+challenges) is passed to the agent alongside the findings.
 
 ### Agent 2 — Keyword research (`agents/keyword_research.py`, prompt `keyword_research@v3`)
 
@@ -306,7 +307,7 @@ flowchart TD
     REQ["Request a page or API"] --> T1["Try 1"]
     T1 -->|success| OK["Use the response"]
     T1 -->|permanent error| GIVEUP
-    T1 -->|temporary error| WAIT["Wait, then retry"]
+    T1 -->|temporary error| WAIT["Wait 2 s, or Retry-After"]
     WAIT --> T2["Try 2"]
     T2 -->|success| OK
     T2 -->|any error| GIVEUP["Record the failure and log a warning"]
@@ -322,10 +323,24 @@ flowchart TD
 | Invalid LLM reply (not valid JSON for the schema) | 2 replies | One correction request | – | Agent marked `failed`. |
 
 - **Wait before the retry:** the server's `Retry-After` header (capped at 30 s), otherwise
-  about 1 s plus random jitter.
+  exponential backoff `CRAWLER_DELAY_SECONDS × 2^attempt` with ±10 % jitter: 2 s before the
+  second try (4 s, 8 s … if `HTTP_MAX_ATTEMPTS` is raised), capped at
+  `CRAWLER_MAX_DELAY_SECONDS`.
 - **Logging:** every retry is logged as `http_retry` (attempt, reason, wait) and every
   give-up as `http_gave_up`. URLs are logged without query strings, so API keys never
   appear.
+- **Exponential backoff (crawler):** the crawler pauses `CRAWLER_DELAY_SECONDS` (default
+  **1 s**) before every request. Each network error, 429 or 5xx doubles the pause
+  (1 → 2 → 4 → 8 → 16 → 30 s, capped at `CRAWLER_MAX_DELAY_SECONDS`, default 30 s); each
+  healthy page halves it again, step by step back to 1 s. Pauses get ±10 % jitter so the
+  parallel workers don't hit the site in lock-step. A robots.txt `Crawl-delay` larger than
+  the base is respected.
+- **Circuit breaker:** after 10 such errors in a row the crawl pauses for 60 s once. If the
+  site is still failing, the crawl **stops early**: pages already crawled are analysed, the
+  rest are listed as not crawled, the coverage line says so, and the audit agent treats the
+  errors as a capacity or rate-limiting problem instead of hundreds of broken pages.
+- **Bot protection:** pages answered with a Cloudflare challenge (`cf-mitigated: challenge`)
+  are counted and reported, with a recommendation to allow legitimate crawlers.
 - **Workflow steps** are not re-run automatically. A step that fails is marked `failed`,
   and `seo-agent --resume <run_id>` re-runs from the last checkpoint.
 
@@ -362,8 +377,12 @@ with `***REDACTED***`.
 | `step_crashed` | error | step, traceback | Unexpected exception inside a node |
 | `tool_finished` | info / warning | tool, status, duration_ms, error_code, retryable, warnings, file | Every tool call (warning when failed) |
 | `tool_crashed` | error | tool, traceback | Unexpected exception inside a tool |
-| `crawl_started` / `crawl_progress` / `crawl_finished` | info | queued, fetched, failed, status counts | Crawl start, every 25 pages, end |
-| `page_failed` | warning | url, error | A page failed after its last try; the crawl moves on |
+| `crawl_started` / `crawl_progress` / `crawl_finished` | info | queued, fetched, failed, delay_s, status counts, crawl health | Crawl start, every 25 pages, end |
+| `page_failed` | warning | url, status, error | A page failed (network error or 5xx) after its last try; the crawl moves on |
+| `crawl_backoff` | info | delay_s, level, struggling_in_a_row | The site returned 429/5xx or a network error; the pause doubled |
+| `crawl_speeding_up` | info | delay_s, level | A healthy page; the pause halved back towards 1 s |
+| `crawl_paused` | warning | seconds, reason, fetched | 10 struggling responses in a row: 60 s pause |
+| `crawl_stopped_early` | error | fetched, reason, not_crawled | Still failing after the pause: crawl ends, analysis continues |
 | `http_retry` | info | url, attempt, reason, wait_s | Before the second try |
 | `http_gave_up` | warning | url, attempts, reason | After the last try |
 | `llm_call` | info | model, attempt, duration_ms, input/output tokens | Every LLM reply |
@@ -542,7 +561,7 @@ Migrations run in the app's startup when `AUTO_MIGRATE=true`.
 | 4. Per-agent LLM | `<AGENT>_LLM_PROVIDER / _MODEL / _REASONING / _TEMPERATURE / _MAX_TOKENS` |
 | 6. Application | `APP_ENV`, `LOG_LEVEL`, `LOG_JSON`, `LOG_FILE`, `API_HOST`, `API_PORT` |
 | 7. Database | `DATABASE_URL`, `AUTO_MIGRATE` |
-| 8. Crawler | `CRAWLER_USER_AGENT`, `CRAWLER_MAX_PAGES`, `CRAWLER_MAX_DEPTH`, `CRAWLER_CONCURRENCY`, `CRAWLER_DELAY_SECONDS`, `CRAWLER_REQUEST_TIMEOUT_SECONDS`, `CRAWLER_MAX_RESPONSE_BYTES`, `HTTP_MAX_ATTEMPTS` (default 2) |
+| 8. Crawler | `CRAWLER_USER_AGENT`, `CRAWLER_MAX_PAGES`, `CRAWLER_MAX_DEPTH`, `CRAWLER_CONCURRENCY`, `CRAWLER_DELAY_SECONDS` (1 s), `CRAWLER_MAX_DELAY_SECONDS` (30 s), `CRAWLER_REQUEST_TIMEOUT_SECONDS`, `CRAWLER_MAX_RESPONSE_BYTES`, `HTTP_MAX_ATTEMPTS` (default 2) |
 | 9. Data sources | `PAGESPEED_MAX_URLS`, `GSC_PROPERTY`, `GSC_LOOKBACK_DAYS` |
 
 - **Blank values** fall back to code defaults.

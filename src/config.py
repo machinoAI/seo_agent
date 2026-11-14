@@ -91,7 +91,10 @@ class Settings(BaseSettings):
     crawler_max_pages: int = Field(default=500, ge=1)
     crawler_max_depth: int = Field(default=5, ge=0)
     crawler_concurrency: int = Field(default=4, ge=1, le=32)
-    crawler_delay_seconds: float = Field(default=0.2, ge=0)  # politeness pause per worker
+    # Exponential backoff base: normal pause before each request, doubled per struggling
+    # response (429/5xx/network): 1 → 2 → 4 → 8 → 16 → 30 s (see CrawlThrottle)
+    crawler_delay_seconds: float = Field(default=1.0, ge=0)
+    crawler_max_delay_seconds: float = Field(default=30.0, ge=0)  # backoff cap
     crawler_request_timeout_seconds: float = Field(default=20.0, gt=0)
     crawler_max_response_bytes: int = Field(default=5_000_000, ge=10_000)
     # Tries per HTTP request (pages, PageSpeed, Search Console): 2 = one try + one retry.

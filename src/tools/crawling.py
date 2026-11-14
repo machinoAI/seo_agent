@@ -8,6 +8,7 @@ import asyncio
 import gzip
 import io
 import json
+import random
 import re
 import zlib
 from collections import Counter
@@ -20,7 +21,7 @@ from lxml import etree
 
 from src.config import get_settings
 from src.observability.logging import get_logger
-from src.tools.base import ToolOutput, ToolRequest, recorded_tool
+from src.tools.base import ToolOutput, ToolRequest, ToolStatus, recorded_tool
 from src.tools.http import FetchError, SafeHttpClient
 
 ASSET_EXTENSIONS = frozenset(
@@ -323,18 +324,119 @@ class CrawlRequest(ToolRequest):
     max_depth: int = 5
 
 
+SITE_TROUBLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+BREAKER_THRESHOLD = 10  # struggling responses in a row before pausing / stopping
+BREAKER_PAUSE_SECONDS = 60.0
+
+
+def page_failed(page: dict[str, Any]) -> bool:
+    """Not usable: network failure or a server error (5xx) after the last try."""
+    return bool(page.get("error")) or (page.get("status_code") or 0) >= 500
+
+
+def site_struggling(page: dict[str, Any]) -> bool:
+    """Signs the site is overloaded or rate-limiting us (not ordinary 404s)."""
+    return page.get("error") == "network_error" or page.get("status_code") in SITE_TROUBLE_STATUSES
+
+
+class CrawlThrottle:
+    """Exponential backoff plus a circuit breaker, so the crawl never hammers a struggling site.
+
+    * Pause before each request = base × 2^level, capped at CRAWLER_MAX_DELAY_SECONDS.
+      The base is CRAWLER_DELAY_SECONDS (default 1 s) or the robots.txt Crawl-delay,
+      whichever is larger. With a 1 s base: 1 → 2 → 4 → 8 → 16 → 30 s.
+    * Every struggling response (network error, 429, 5xx) raises the level by one; every
+      healthy response lowers it by one, so the crawl speeds back up step by step.
+    * After BREAKER_THRESHOLD struggling responses in a row the crawl pauses for
+      BREAKER_PAUSE_SECONDS once. If the site is still failing after the pause, the crawl
+      stops early; pages already crawled are analysed and the rest are reported uncrawled.
+    """
+
+    MAX_LEVEL = 16
+
+    def __init__(
+        self,
+        base_delay: float,
+        max_delay: float,
+        threshold: int = BREAKER_THRESHOLD,
+        pause_seconds: float = BREAKER_PAUSE_SECONDS,
+    ) -> None:
+        self.base = base_delay
+        self.unit = base_delay if base_delay > 0 else 1.0  # backoff still works with base 0
+        self.max = max(max_delay, base_delay)
+        self.level = 0
+        self.threshold = threshold
+        self.pause_seconds = pause_seconds
+        self.consecutive = 0
+        self.paused = False
+        self.stopped = False
+        self.server_errors = 0
+        self.first_error_after: int | None = None
+        self.max_delay_seen = base_delay
+
+    @property
+    def delay(self) -> float:
+        if self.level == 0:
+            return self.base
+        return float(min(self.max, self.unit * 2**self.level))
+
+    def jittered_delay(self) -> float:
+        """Delay ±10 %, so parallel workers don't hit the site in lock-step."""
+        return self.delay * random.uniform(0.9, 1.1)  # noqa: S311 - jitter, not crypto
+
+    def record(self, page: dict[str, Any], pages_done: int) -> str:
+        """Update from one page; returns 'ok', 'slowed', 'pause' or 'stop'."""
+        if not site_struggling(page):
+            self.consecutive = 0
+            self.level = max(self.level - 1, 0)
+            return "ok"
+        self.server_errors += 1
+        if self.first_error_after is None:
+            self.first_error_after = pages_done
+        self.consecutive += 1
+        if self.delay < self.max:
+            self.level = min(self.level + 1, self.MAX_LEVEL)
+        self.max_delay_seen = max(self.max_delay_seen, self.delay)
+        if self.consecutive < self.threshold:
+            return "slowed"
+        if not self.paused:
+            self.paused = True
+            self.consecutive = 0
+            return "pause"
+        self.stopped = True
+        return "stop"
+
+    def health(self) -> dict[str, Any]:
+        return {
+            "server_errors": self.server_errors,
+            "first_server_error_after_pages": self.first_error_after,
+            "max_delay_s": round(self.max_delay_seen, 1),
+            "paused": self.paused,
+            "stopped_early": self.stopped,
+        }
+
+
 @recorded_tool("crawl_website")
 async def crawl_website(request: CrawlRequest) -> ToolOutput:
-    """Breadth-first crawl inside the site, respecting robots.txt and the page budget."""
+    """Breadth-first crawl inside the site, respecting robots.txt, the page budget and the
+    site's health (adaptive delay and circuit breaker, see CrawlThrottle)."""
     settings = get_settings()
     allowed = set(request.allowed_hosts)
     robots = parse_robots(request.robots_txt) if request.robots_txt else None
     user_agent = settings.crawler_user_agent
+    robots_delay = float(robots.crawl_delay(user_agent) or 0) if robots else 0.0
+    throttle = CrawlThrottle(
+        base_delay=max(settings.crawler_delay_seconds, robots_delay),
+        max_delay=settings.crawler_max_delay_seconds,
+    )
+    loop = asyncio.get_running_loop()
+    pause_until = 0.0
 
     queue: asyncio.Queue[tuple[str, int]] = asyncio.Queue()
     seen: set[str] = set()
     pages: list[dict[str, Any]] = []
     blocked_by_robots: list[str] = []
+    not_crawled: list[str] = []
 
     def enqueue(url: str | None, depth: int) -> None:
         if url is None or url in seen or len(seen) >= request.max_pages or is_asset(url):
@@ -349,17 +451,27 @@ async def crawl_website(request: CrawlRequest) -> ToolOutput:
         enqueue(normalize_url(seed), 1)
     logger.info("crawl_started", start_url=request.start_url, queued=len(seen),
                 max_pages=request.max_pages, concurrency=settings.crawler_concurrency,
-                max_attempts=settings.http_max_attempts)
+                max_attempts=settings.http_max_attempts, base_delay_s=throttle.base,
+                robots_crawl_delay_s=robots_delay or None)
 
     async with SafeHttpClient.from_settings(settings, allowed_hosts=allowed) as client:
 
         async def worker() -> None:
+            nonlocal pause_until
             while True:
                 url, depth = await queue.get()
                 try:
+                    if throttle.stopped:
+                        not_crawled.append(url)
+                        continue
                     if robots is not None and not robots.can_fetch(user_agent, url):
                         blocked_by_robots.append(url)
                         logger.debug("page_skipped_robots", url=url)
+                        continue
+                    paused_for = max(pause_until - loop.time(), 0)
+                    await asyncio.sleep(paused_for + throttle.jittered_delay())
+                    if throttle.stopped:  # another worker tripped the breaker meanwhile
+                        not_crawled.append(url)
                         continue
                     try:
                         page = await _crawl_page(client, url, depth, allowed)
@@ -367,20 +479,41 @@ async def crawl_website(request: CrawlRequest) -> ToolOutput:
                         logger.exception("page_crashed", url=url)
                         page = {"url": url, "depth": depth, "status_code": None,
                                 "error": "unexpected_error"}
-                    if page.get("error"):
-                        # Retries are exhausted (see SafeHttpClient): record it and move on.
-                        logger.warning("page_failed", url=url, error=page["error"])
                     pages.append(page)
+                    if page_failed(page):
+                        # Retries are exhausted (see SafeHttpClient): record it and move on.
+                        logger.warning("page_failed", url=url, status=page.get("status_code"),
+                                       error=page.get("error"))
+
+                    previous_delay = throttle.delay
+                    action = throttle.record(page, len(pages))
+                    if action == "slowed" and throttle.delay > previous_delay:
+                        logger.info("crawl_backoff", delay_s=round(throttle.delay, 1),
+                                    level=throttle.level,
+                                    struggling_in_a_row=throttle.consecutive)
+                    elif action == "ok" and throttle.delay < previous_delay:
+                        logger.info("crawl_speeding_up", delay_s=round(throttle.delay, 1),
+                                    level=throttle.level)
+                    elif action == "pause":
+                        pause_until = loop.time() + throttle.pause_seconds
+                        logger.warning("crawl_paused", seconds=throttle.pause_seconds,
+                                       reason=f"{BREAKER_THRESHOLD} server errors in a row",
+                                       fetched=len(pages))
+                    elif action == "stop":
+                        logger.error("crawl_stopped_early", fetched=len(pages),
+                                     reason="site still failing after the pause",
+                                     not_crawled=queue.qsize())
+
                     if len(pages) % PROGRESS_EVERY == 0:
                         logger.info("crawl_progress", fetched=len(pages), queued=queue.qsize(),
-                                    failed=sum(1 for p in pages if p.get("error")))
+                                    failed=sum(1 for p in pages if page_failed(p)),
+                                    delay_s=round(throttle.delay, 1))
                     final = page.get("final_url")
                     if isinstance(final, str):
                         seen.add(final)
-                    if depth < request.max_depth:
+                    if depth < request.max_depth and not throttle.stopped:
                         for link in page.get("internal_links", []):
                             enqueue(link, depth + 1)
-                    await asyncio.sleep(settings.crawler_delay_seconds)
                 finally:
                     queue.task_done()
 
@@ -398,28 +531,45 @@ async def crawl_website(request: CrawlRequest) -> ToolOutput:
         key = str(page.get("status_code") or page.get("error") or "unknown")
         status_counts[key] = status_counts.get(key, 0) + 1
     warnings = []
-    if len(seen) >= request.max_pages:
+    if len(seen) >= request.max_pages and not throttle.stopped:
         warnings.append(f"Page budget of {request.max_pages} reached; the crawl is a sample.")
     if not html_pages:
         warnings.append("No HTML pages could be crawled.")
-    failed = sum(1 for p in pages if p.get("error"))
+    failed = sum(1 for p in pages if page_failed(p))
     if failed:
-        warnings.append(f"{failed} page(s) failed after {settings.http_max_attempts} tries.")
+        warnings.append(f"{failed} page(s) failed after {settings.http_max_attempts} tries "
+                        "(network error or server error).")
+    challenges = sum(1 for p in pages if p.get("bot_challenge"))
+    if challenges:
+        warnings.append(f"{challenges} page(s) answered with a bot-protection challenge "
+                        "(e.g. Cloudflare); allow the crawler's user agent or IP.")
+    health = {**throttle.health(), "not_crawled": len(not_crawled),
+              "bot_challenges": challenges, "robots_crawl_delay_s": robots_delay or None}
+    if throttle.stopped:
+        warnings.append(
+            f"Crawl stopped early after {len(pages)} pages: the site kept returning server "
+            f"errors (first after {throttle.first_error_after} pages), so {len(not_crawled)} "
+            "queued pages were not crawled. This looks like overload or rate limiting."
+        )
     logger.info("crawl_finished", fetched=len(pages), html_pages=len(html_pages), failed=failed,
-                blocked_by_robots=len(blocked_by_robots), status_counts=status_counts)
+                blocked_by_robots=len(blocked_by_robots), status_counts=status_counts, **health)
 
     return ToolOutput(
         source="crawler",
+        status=ToolStatus.PARTIAL if throttle.stopped else ToolStatus.SUCCESS,
         data={
             "start_url": request.start_url,
             "pages": pages,
             "blocked_by_robots": blocked_by_robots,
+            "not_crawled": not_crawled[:1000],
             "stats": {
                 "pages_fetched": len(pages),
                 "html_pages": len(html_pages),
+                "failed_pages": failed,
                 "blocked_by_robots": len(blocked_by_robots),
                 "status_counts": status_counts,
                 "budget_reached": len(seen) >= request.max_pages,
+                "crawl_health": health,
             },
         },
         warnings=warnings,
@@ -445,6 +595,8 @@ async def _crawl_page(
         "truncated": response.truncated,
         "x_robots_tag": response.headers.get("x-robots-tag"),
     }
+    if response.headers.get("cf-mitigated") == "challenge":
+        page["bot_challenge"] = True  # Cloudflare served a challenge instead of the page
     if response.status_code == 200 and response.is_html:
         page.update(parse_html(response.final_url, response.text(), allowed))
     return page

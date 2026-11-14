@@ -9,8 +9,10 @@ Safety (design doc §12.1):
   * response bodies are size-capped and every request times out.
 Retry policy (§9): at most HTTP_MAX_ATTEMPTS tries per request (default 2: one try plus
 one retry), only for connection errors, timeouts, 429 and 500/502/503/504. The wait
-before the retry honours Retry-After (capped at 30 s), otherwise ~1 s with jitter. After
-the last try the caller records the failure and moves on (the crawler to the next page).
+before a retry honours Retry-After (capped at 30 s), otherwise exponential backoff:
+CRAWLER_DELAY_SECONDS × 2^attempt (1 s base → 2 s before the first retry, 4 s, 8 s … if
+more tries are configured), ±10 % jitter, capped at CRAWLER_MAX_DELAY_SECONDS. After the
+last try the caller records the failure and moves on (the crawler to the next page).
 Every retry and give-up is logged without query strings, so API keys never reach logs.
 
 Residual risk: DNS can change between the check and the connection (rebinding). Results
@@ -98,7 +100,11 @@ class SafeHttpClient:
         concurrency: int = 4,
         allowed_hosts: set[str] | None = None,
         max_attempts: int = 2,
+        backoff_base: float = 1.0,
+        max_backoff: float = MAX_RETRY_AFTER_SECONDS,
     ) -> None:
+        self._backoff_base = backoff_base if backoff_base > 0 else 1.0
+        self._max_backoff = max_backoff
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_seconds),
             follow_redirects=False,
@@ -123,6 +129,8 @@ class SafeHttpClient:
             "concurrency": settings.crawler_concurrency,
             "allowed_hosts": allowed_hosts,
             "max_attempts": settings.http_max_attempts,
+            "backoff_base": settings.crawler_delay_seconds,
+            "max_backoff": settings.crawler_max_delay_seconds,
         }
         options.update(overrides)
         return cls(**options)
@@ -280,14 +288,15 @@ class SafeHttpClient:
                     raise FetchError(
                         "network_error", f"{reason} for {url}", transient=True
                     ) from exc
-                wait = _backoff(attempt, None)
+                wait = _backoff(attempt, None, self._backoff_base, self._max_backoff)
                 logger.info("http_retry", url=_log_url(url), attempt=attempt, reason=reason,
                             wait_s=round(wait, 1))
                 await asyncio.sleep(wait)
                 continue
             if response.status_code in RETRY_STATUSES:
                 if attempt < self._max_attempts:
-                    wait = _backoff(attempt, response.headers.get("retry-after"))
+                    wait = _backoff(attempt, response.headers.get("retry-after"),
+                                    self._backoff_base, self._max_backoff)
                     logger.info("http_retry", url=_log_url(url), attempt=attempt,
                                 reason=f"HTTP {response.status_code}", wait_s=round(wait, 1))
                     await asyncio.sleep(wait)
@@ -316,7 +325,15 @@ async def _read_capped(response: httpx.Response, max_bytes: int) -> tuple[bytes,
     return b"".join(chunks), False
 
 
-def _backoff(attempt: int, retry_after: str | None) -> float:
+def _backoff(
+    attempt: int,
+    retry_after: str | None,
+    base: float = 1.0,
+    cap: float = MAX_RETRY_AFTER_SECONDS,
+) -> float:
+    """Wait before the next try: the server's Retry-After if given, otherwise exponential
+    backoff base × 2^attempt (1 s base → 2 s, 4 s, 8 s …) with ±10 % jitter, capped."""
     if retry_after and retry_after.strip().isdigit():
         return min(float(retry_after), MAX_RETRY_AFTER_SECONDS)
-    return min(2 ** (attempt - 1), 8) + random.uniform(0, 0.5)  # noqa: S311 - jitter, not crypto
+    wait = min(base * 2**attempt, cap)
+    return wait * random.uniform(0.9, 1.1)  # noqa: S311 - jitter, not crypto

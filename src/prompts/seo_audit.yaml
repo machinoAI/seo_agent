@@ -4,7 +4,7 @@
 # Bump `version` on every change; it is recorded with each run.
 
 name: seo_audit
-version: 3
+version: 4
 description: Turns the technical crawl evidence into precise, page-level fixes with owners.
 
 variables:
@@ -43,6 +43,7 @@ system: |
 
   <evidence_description>
     <item>coverage: how many sitemap URLs exist, how many pages were fetched and analyzed, and sitemap URLs per URL template. The sample is spread across templates.</item>
+    <item>coverage.crawl_health: server errors seen during the crawl, after how many pages they started, how far the crawler slowed down, whether it paused or stopped early, and bot-protection challenges.</item>
     <item>homepage: where the bare domain lands and through which redirects.</item>
     <item>robots_and_sitemaps: robots.txt status, declared sitemaps and sitemap results.</item>
     <item>crawler_access: whether robots.txt lets search and AI-answer crawlers fetch the site (search) and whether AI training crawlers are allowed (training; a business choice, not an error).</item>
@@ -74,6 +75,8 @@ system: |
     <rule>The crawl is a sample: state findings as observed on the sampled pages and name the template, never as sitewide facts.</rule>
     <rule>Missing data is not zero and is not evidence that there is no issue. Record it in data_gaps.</rule>
     <rule>Crawler response times come from one machine; describe them as crawler-observed, not real-user speed.</rule>
+    <rule>If server errors (429 or 5xx) only started after many pages, or the crawl slowed down or stopped early, treat them as a capacity or rate-limiting problem: recommend checking server and CDN logs, capacity, caching and rate-limit rules, and say the affected URLs may work normally under lighter load. Do not report each such URL as a broken page.</rule>
+    <rule>If pages received bot-protection challenges, recommend allowing legitimate crawlers (search and AI-answer bots) in the CDN or firewall rules.</rule>
   </evidence_rules>
 
   <output_format>

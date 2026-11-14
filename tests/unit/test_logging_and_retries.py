@@ -44,7 +44,7 @@ def _client(monkeypatch: pytest.MonkeyPatch, outcomes: list[Any]) -> tuple[SafeH
 
     monkeypatch.setattr(client, "_getaddrinfo", public_dns)
     monkeypatch.setattr(client._client, "stream", stream)
-    monkeypatch.setattr(http_module, "_backoff", lambda attempt, retry_after: 0)
+    monkeypatch.setattr(http_module, "_backoff", lambda *args: 0)
     return client, tries
 
 

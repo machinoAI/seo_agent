@@ -217,8 +217,9 @@ Google Cloud console → enable **PageSpeed Insights API** → Credentials → *
 
 ## Reliability & observability
 
-- **Retry policy:** every request — pages, PageSpeed, Search Console, LLM — gets **at most 2 tries** (temporary errors only, honouring `Retry-After`). A page that still fails is recorded and the crawl moves on. → [details](docs/architecture.md#6-retry-policy)
+- **Retry policy:** every request — pages, PageSpeed, Search Console, LLM — gets **at most 2 tries** (temporary errors only; waits `Retry-After` or 2 s exponential backoff). A page that still fails is recorded and the crawl moves on. → [details](docs/architecture.md#6-retry-policy)
 - **Structured logging:** console, a rotating JSON log at `data/logs/seo_agent.log`, and a per-run `run.log`. Run, site and step on every line; API keys redacted; URLs logged without query strings. → [event catalogue](docs/architecture.md#7-logging)
+- **Polite crawling with exponential backoff:** 1 s between requests; every 429/5xx/network error doubles the pause (1 → 2 → 4 → 8 → 16 → 30 s) and healthy pages halve it again. After 10 errors in a row the crawl pauses 60 s, then stops early if the site keeps failing, so a struggling server is never hammered.
 - **Safe by default:** public-IP-only DNS, re-validated redirects, crawl scope allow-list, response size and time limits, robots.txt respected.
 - **Resumable:** checkpoints after every step; Ctrl+C is safe.
 - **Traceable:** every number in the report comes from a recorded tool call in the run folder.

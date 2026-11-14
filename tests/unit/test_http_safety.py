@@ -65,4 +65,4 @@ async def test_private_dns_answer_is_blocked(monkeypatch: pytest.MonkeyPatch) ->
 def test_retry_after_is_honoured_and_capped() -> None:
     assert _backoff(1, "3") == 3.0
     assert _backoff(1, "3600") == 30.0
-    assert 1.0 <= _backoff(2, None) <= 2.5
+    assert 3.6 <= _backoff(2, None) <= 4.4  # 1 s base × 2^2, ±10 % jitter
