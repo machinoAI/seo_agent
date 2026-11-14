@@ -1,13 +1,15 @@
 """Run lifecycle shared by the CLI runner and the API: create, execute, resume."""
 
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
-from src.observability.logging import bind_context, get_logger
+from src.observability.logging import bind_context, get_logger, run_log
 from src.orchestration.graph import VALIDATE, build_graph, open_checkpointer
 from src.orchestration.state import STATE_VERSION, TaskStatus, WorkflowState
 from src.persistence.database import transaction
@@ -97,40 +99,58 @@ async def execute_workflow(run: PreparedRun, *, resume: bool = False) -> Workflo
         "recursion_limit": RECURSION_LIMIT,
     }
 
-    async with transaction() as session:
-        await update_run(session, run.run_id, status=RunStatus.RUNNING)
-    try:
-        async with open_checkpointer() as checkpointer:
-            graph = build_graph().compile(checkpointer=checkpointer)
-            graph_input: WorkflowState | None = initial
-            if resume and (await graph.aget_state(config)).values:
-                graph_input = None  # continue from the last checkpoint
-            final: WorkflowState = await graph.ainvoke(graph_input, config)
-    except BaseException as exc:  # includes Ctrl+C: the run can be resumed later
+    with run_log(Path(run.output_dir) / "run.log", str(run.run_id)):
+        started = time.monotonic()
+        logger.info("run_started", resume=resume, options=run.options, output_dir=run.output_dir)
+        async with transaction() as session:
+            await update_run(session, run.run_id, status=RunStatus.RUNNING)
+        try:
+            async with open_checkpointer() as checkpointer:
+                graph = build_graph().compile(checkpointer=checkpointer)
+                graph_input: WorkflowState | None = initial
+                if resume and (await graph.aget_state(config)).values:
+                    graph_input = None  # continue from the last checkpoint
+                    logger.info("run_resuming_from_checkpoint")
+                final: WorkflowState = await graph.ainvoke(graph_input, config)
+        except BaseException as exc:  # includes Ctrl+C: the run can be resumed later
+            logger.error("run_failed", error=f"{type(exc).__name__}: {str(exc)[:300]}",
+                         duration_s=round(time.monotonic() - started, 1),
+                         resume_with=f"seo-agent --resume {run.run_id}")
+            async with transaction() as session:
+                await update_run(
+                    session, run.run_id, status=RunStatus.FAILED,
+                    error=f"{type(exc).__name__}: {str(exc)[:500]} (resume with --resume)",
+                )
+            raise
+
+        task_status = final.get("task_status", {})
+        status = _final_status(task_status)
+        summary = {
+            "task_status": task_status,
+            "pages_crawled": final.get("pages_crawled"),
+            "cost": final.get("cost"),
+            "data_gaps": final.get("data_gaps", []),
+            "errors": final.get("errors", []),
+        }
         async with transaction() as session:
             await update_run(
-                session, run.run_id, status=RunStatus.FAILED,
-                error=f"{type(exc).__name__}: {str(exc)[:500]} (resume with --resume)",
+                session,
+                run.run_id,
+                status=status,
+                summary=summary,
+                report_path=final.get("report_path") or None,
+                error="; ".join(final.get("errors", []))[:2000] or None,
             )
-        raise
-
-    task_status = final.get("task_status", {})
-    status = _final_status(task_status)
-    summary = {
-        "task_status": task_status,
-        "pages_crawled": final.get("pages_crawled"),
-        "cost": final.get("cost"),
-        "data_gaps": final.get("data_gaps", []),
-        "errors": final.get("errors", []),
-    }
-    async with transaction() as session:
-        await update_run(
-            session,
-            run.run_id,
-            status=status,
-            summary=summary,
-            report_path=final.get("report_path") or None,
-            error="; ".join(final.get("errors", []))[:2000] or None,
+        cost = final.get("cost") or {}
+        logger.info(
+            "run_finished",
+            status=status.value,
+            duration_s=round(time.monotonic() - started, 1),
+            steps=task_status,
+            pages_crawled=final.get("pages_crawled"),
+            data_gaps=len(final.get("data_gaps", [])),
+            errors=len(final.get("errors", [])),
+            llm_cost_usd=cost.get("cost_usd"),
+            report=final.get("report_path"),
         )
-    logger.info("run_finished", status=status.value)
-    return final
+        return final

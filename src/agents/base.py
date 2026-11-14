@@ -10,10 +10,12 @@ import asyncio
 import functools
 import json
 import re
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -162,8 +164,19 @@ async def _invoke_validated(
 ) -> dict[str, Any]:
     """Call the model, validate the JSON reply; one correction retry. Token usage of every
     call (including failed attempts) is added to `usage`."""
+    model_name = getattr(model, "model_name", None) or getattr(model, "model", None)
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        started = time.monotonic()
         reply = await model.ainvoke(messages)
+        meta = getattr(reply, "usage_metadata", None) or {}
+        logger.info(
+            "llm_call",
+            model=model_name,
+            attempt=attempt,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            input_tokens=meta.get("input_tokens"),
+            output_tokens=meta.get("output_tokens"),
+        )
         if usage is not None:
             add_usage(usage, reply)
         try:
@@ -253,4 +266,17 @@ async def run_agent(
             error=error,
             usage=usage or None,
         )
+    (logger.info if output is not None else logger.warning)(
+        "agent_finished",
+        agent=agent.value,
+        status=status.value,
+        model=spec.model if spec else None,
+        prompt=prompt.ref,
+        llm_calls=usage.get("llm_calls", 0),
+        input_tokens=usage.get("input_tokens", 0),
+        output_tokens=usage.get("output_tokens", 0),
+        cost_usd=usage.get("cost_usd"),
+        error=error,
+        file=Path(path).name,
+    )
     return AgentOutcome(status=status, output=output, output_path=str(path), error=error)

@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.check_sources:
         return asyncio.run(_check_sources(site))
 
-    configure_logging(settings.log_level, json_output=settings.log_json)
+    configure_logging(settings.log_level, json_output=settings.log_json, log_file=settings.log_file)
     if settings.auto_migrate and not run_migrations():
         print("alembic.ini not found: run from the project root.", file=sys.stderr)
         return 2

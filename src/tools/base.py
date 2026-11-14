@@ -22,7 +22,6 @@ Nothing a tool returns is lost, including failures.
 import asyncio
 import functools
 import inspect
-import logging
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -33,9 +32,10 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from src.config import normalize_site
+from src.observability.logging import get_logger
 from src.persistence.output_store import OutputStore, get_output_store
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _TOOL_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
@@ -124,7 +124,7 @@ def _error_from(exc: Exception, tool: str) -> ToolError:
     if isinstance(exc, ToolFailure):
         return exc.error
     # Unexpected error: keep internals out of the result (it may reach an LLM); log them.
-    logger.exception("Unexpected error in tool %s", tool)
+    logger.exception("tool_crashed", tool=tool)
     return ToolError(
         code="unexpected_error",
         message=f"{type(exc).__name__} in {tool}",
@@ -168,6 +168,18 @@ def _record(store: OutputStore, request: ToolRequest, result: ToolResult) -> Too
             "request": request.model_dump(mode="json"),
             "result": result.model_dump(mode="json", exclude={"output_path"}),
         },
+    )
+    duration_ms = int((result.completed_at - result.started_at).total_seconds() * 1000)
+    log = logger.warning if result.status is ToolStatus.FAILED else logger.info
+    log(
+        "tool_finished",
+        tool=result.tool,
+        status=result.status.value,
+        duration_ms=duration_ms,
+        error_code=result.error.code if result.error else None,
+        retryable=result.retryable,
+        warnings=len(result.warnings),
+        file=path.name,
     )
     return result.model_copy(update={"output_path": str(path)})
 

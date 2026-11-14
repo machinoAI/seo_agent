@@ -78,7 +78,8 @@ class Settings(BaseSettings):
     app_env: Environment = Environment.LOCAL
     app_name: str = "seo-agent"
     log_level: str = "INFO"
-    log_json: bool = False
+    log_json: bool = False  # console format; the log file is always JSON lines
+    log_file: Path | None = Path("data/logs/seo_agent.log")  # rotating; blank = console only
 
     # ── Database ────────────────────────────────────────────────────────────
     # Local default: a SQLite file (no server). Production: postgresql+psycopg://...
@@ -93,6 +94,9 @@ class Settings(BaseSettings):
     crawler_delay_seconds: float = Field(default=0.2, ge=0)  # politeness pause per worker
     crawler_request_timeout_seconds: float = Field(default=20.0, gt=0)
     crawler_max_response_bytes: int = Field(default=5_000_000, ge=10_000)
+    # Tries per HTTP request (pages, PageSpeed, Search Console): 2 = one try + one retry.
+    # After the last try the failure is recorded and the crawl moves to the next page.
+    http_max_attempts: int = Field(default=2, ge=1, le=5)
 
     # ── Google data sources ─────────────────────────────────────────────────
     pagespeed_api_key: SecretStr | None = None  # optional; raises the PageSpeed quota
@@ -111,7 +115,7 @@ class Settings(BaseSettings):
     llm_temperature: float | None = None  # None = provider default
     llm_max_tokens: int = 16_384  # includes thinking tokens on reasoning models
     llm_timeout_seconds: float = 120.0
-    llm_max_retries: int = 2
+    llm_max_retries: int = Field(default=1, ge=0, le=5)  # 1 retry = at most 2 tries per call
     # Extra/overridden token prices, USD per 1M: {"model": [input, cached_input, output]}
     llm_prices: dict[str, list[float]] = Field(default_factory=dict)
 

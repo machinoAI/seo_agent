@@ -19,6 +19,7 @@ from bs4 import BeautifulSoup
 from lxml import etree
 
 from src.config import get_settings
+from src.observability.logging import get_logger
 from src.tools.base import ToolOutput, ToolRequest, recorded_tool
 from src.tools.http import FetchError, SafeHttpClient
 
@@ -30,6 +31,9 @@ ASSET_EXTENSIONS = frozenset(
 _TRACKING_PARAMS = re.compile(r"^(utm_\w+|gclid|fbclid|msclkid|mc_cid|mc_eid|_ga)$", re.I)
 _WORD = re.compile(r"\w+", re.UNICODE)
 MAX_LINKS_PER_PAGE = 300
+PROGRESS_EVERY = 25  # log a progress line every N pages
+
+logger = get_logger(__name__)
 MAX_SITEMAP_BYTES = 50_000_000
 MAX_ROBOTS_BYTES = 500_000
 
@@ -343,6 +347,9 @@ async def crawl_website(request: CrawlRequest) -> ToolOutput:
     enqueue(normalize_url(request.start_url), 0)
     for seed in request.seed_urls:
         enqueue(normalize_url(seed), 1)
+    logger.info("crawl_started", start_url=request.start_url, queued=len(seen),
+                max_pages=request.max_pages, concurrency=settings.crawler_concurrency,
+                max_attempts=settings.http_max_attempts)
 
     async with SafeHttpClient.from_settings(settings, allowed_hosts=allowed) as client:
 
@@ -352,13 +359,21 @@ async def crawl_website(request: CrawlRequest) -> ToolOutput:
                 try:
                     if robots is not None and not robots.can_fetch(user_agent, url):
                         blocked_by_robots.append(url)
+                        logger.debug("page_skipped_robots", url=url)
                         continue
                     try:
                         page = await _crawl_page(client, url, depth, allowed)
                     except Exception:  # one bad page must not stop the crawl
+                        logger.exception("page_crashed", url=url)
                         page = {"url": url, "depth": depth, "status_code": None,
                                 "error": "unexpected_error"}
+                    if page.get("error"):
+                        # Retries are exhausted (see SafeHttpClient): record it and move on.
+                        logger.warning("page_failed", url=url, error=page["error"])
                     pages.append(page)
+                    if len(pages) % PROGRESS_EVERY == 0:
+                        logger.info("crawl_progress", fetched=len(pages), queued=queue.qsize(),
+                                    failed=sum(1 for p in pages if p.get("error")))
                     final = page.get("final_url")
                     if isinstance(final, str):
                         seen.add(final)
@@ -387,6 +402,11 @@ async def crawl_website(request: CrawlRequest) -> ToolOutput:
         warnings.append(f"Page budget of {request.max_pages} reached; the crawl is a sample.")
     if not html_pages:
         warnings.append("No HTML pages could be crawled.")
+    failed = sum(1 for p in pages if p.get("error"))
+    if failed:
+        warnings.append(f"{failed} page(s) failed after {settings.http_max_attempts} tries.")
+    logger.info("crawl_finished", fetched=len(pages), html_pages=len(html_pages), failed=failed,
+                blocked_by_robots=len(blocked_by_robots), status_counts=status_counts)
 
     return ToolOutput(
         source="crawler",

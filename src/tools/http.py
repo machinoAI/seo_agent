@@ -7,8 +7,11 @@ Safety (design doc §12.1):
   * redirects are followed manually and every hop is re-validated,
   * an optional host allow-list keeps the crawler inside the target site,
   * response bodies are size-capped and every request times out.
-Reliability (§9): bounded retries with exponential backoff and jitter for connection
-errors, 429 and selected 5xx responses; Retry-After is honoured (capped).
+Retry policy (§9): at most HTTP_MAX_ATTEMPTS tries per request (default 2: one try plus
+one retry), only for connection errors, timeouts, 429 and 500/502/503/504. The wait
+before the retry honours Retry-After (capped at 30 s), otherwise ~1 s with jitter. After
+the last try the caller records the failure and moves on (the crawler to the next page).
+Every retry and give-up is logged without query strings, so API keys never reach logs.
 
 Residual risk: DNS can change between the check and the connection (rebinding). Results
 are cached per client, which narrows that window; outbound firewalling closes it fully.
@@ -27,7 +30,10 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from src.config import Settings
+from src.observability.logging import get_logger
 from src.tools.base import ErrorKind, ToolFailure
+
+logger = get_logger(__name__)
 
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -91,7 +97,7 @@ class SafeHttpClient:
         max_bytes: int,
         concurrency: int = 4,
         allowed_hosts: set[str] | None = None,
-        max_attempts: int = 3,
+        max_attempts: int = 2,
     ) -> None:
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_seconds),
@@ -116,6 +122,7 @@ class SafeHttpClient:
             "max_bytes": settings.crawler_max_response_bytes,
             "concurrency": settings.crawler_concurrency,
             "allowed_hosts": allowed_hosts,
+            "max_attempts": settings.http_max_attempts,
         }
         options.update(overrides)
         return cls(**options)
@@ -266,17 +273,35 @@ class SafeHttpClient:
                     "invalid_url", f"Invalid URL: {url[:200]}", transient=False
                 ) from exc
             except (httpx.TransportError, TimeoutError) as exc:  # connect/read errors, timeouts
+                reason = type(exc).__name__
                 if attempt == self._max_attempts:
+                    logger.warning("http_gave_up", url=_log_url(url), attempts=attempt,
+                                   reason=reason)
                     raise FetchError(
-                        "network_error", f"{type(exc).__name__} for {url}", transient=True
+                        "network_error", f"{reason} for {url}", transient=True
                     ) from exc
-                await asyncio.sleep(_backoff(attempt, None))
+                wait = _backoff(attempt, None)
+                logger.info("http_retry", url=_log_url(url), attempt=attempt, reason=reason,
+                            wait_s=round(wait, 1))
+                await asyncio.sleep(wait)
                 continue
-            if response.status_code in RETRY_STATUSES and attempt < self._max_attempts:
-                await asyncio.sleep(_backoff(attempt, response.headers.get("retry-after")))
-                continue
+            if response.status_code in RETRY_STATUSES:
+                if attempt < self._max_attempts:
+                    wait = _backoff(attempt, response.headers.get("retry-after"))
+                    logger.info("http_retry", url=_log_url(url), attempt=attempt,
+                                reason=f"HTTP {response.status_code}", wait_s=round(wait, 1))
+                    await asyncio.sleep(wait)
+                    continue
+                logger.warning("http_gave_up", url=_log_url(url), attempts=attempt,
+                               reason=f"HTTP {response.status_code}")
             return response, body, truncated
         raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _log_url(url: str) -> str:
+    """URL without query string, so API keys passed as parameters never reach the logs."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}{parts.path}"
 
 
 async def _read_capped(response: httpx.Response, max_bytes: int) -> tuple[bytes, bool]:

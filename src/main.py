@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    configure_logging(settings.log_level, json_output=settings.log_json)
+    configure_logging(settings.log_level, json_output=settings.log_json, log_file=settings.log_file)
     if settings.auto_migrate:
         applied = await asyncio.to_thread(run_migrations)
         if not applied:

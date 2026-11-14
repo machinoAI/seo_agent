@@ -118,9 +118,8 @@ async def analyze_page_speed(request: PageSpeedRequest) -> ToolOutput:
     if settings.pagespeed_api_key:
         params["key"] = settings.pagespeed_api_key.get_secret_value()
 
-    async with SafeHttpClient.from_settings(
-        settings, timeout_seconds=PSI_TIMEOUT_SECONDS, max_attempts=2
-    ) as client:
+    psi = SafeHttpClient.from_settings(settings, timeout_seconds=PSI_TIMEOUT_SECONDS)
+    async with psi as client:
         try:
             payload = await client.get_json(PSI_ENDPOINT, params=params)
         except FetchError as exc:
