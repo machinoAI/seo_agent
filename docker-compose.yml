@@ -1,0 +1,41 @@
+# Optional: run the API in a container. Not needed for local use — see README.
+#   docker compose up --build
+# Data (SQLite database, checkpoints, tool outputs) lives in the app_data volume.
+# Secrets come from .env (git-ignored).
+
+services:
+  api:
+    build: .
+    env_file: .env
+    ports:
+      # Local machine only. Before exposing it further, set API_KEY in .env.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - app_data:/app/data
+    restart: unless-stopped
+
+  # Optional PostgreSQL for production-like runs:
+  #   1. build with the driver:  docker compose build --build-arg EXTRAS="[postgres]"
+  #   2. set DATABASE_URL=postgresql+psycopg://seo_agent:<password>@postgres:5432/seo_agent
+  #   3. docker compose --profile postgres up
+  postgres:
+    image: postgres:17-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: seo_agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: seo_agent
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seo_agent -d seo_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  app_data:
+  postgres_data:

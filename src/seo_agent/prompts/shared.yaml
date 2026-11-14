@@ -1,0 +1,18 @@
+# Prompt snippets shared by all agents.
+# Same conventions as the agent files: XML-tagged text, $name placeholders, bump version.
+
+name: shared
+version: 1
+description: Snippets reused by every agent.
+
+snippets:
+  output_correction:
+    description: Sent when a reply could not be parsed or failed schema validation.
+    variables:
+      - error
+    text: |
+      <correction>
+      Your previous reply could not be used. Problem: ${error}
+      Reply again with only the JSON object described in output_format. No prose, no
+      code fences, no comments.
+      </correction>
