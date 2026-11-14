@@ -2,7 +2,7 @@ import gzip
 
 import pytest
 
-from seo_agent.tools.crawling import (
+from src.tools.crawling import (
     is_asset,
     normalize_url,
     parse_html,

@@ -43,7 +43,7 @@ dependencies = [
 ]
 
 [project.scripts]
-seo-agent = "seo_agent.runner:main"
+seo-agent = "src.runner:main"
 
 [project.optional-dependencies]
 # Production database: pip install -e ".[postgres]" and set DATABASE_URL=postgresql+psycopg://...
@@ -60,14 +60,14 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/seo_agent"]
+packages = ["src"]
 
 # ---------------------------------------------------------------- tooling ---
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+src = [".", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "ASYNC", "S", "RUF"]
@@ -80,7 +80,7 @@ ignore = ["S101"]  # assert is fine in tests
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
-mypy_path = "src"
+mypy_path = "."
 
 [[tool.mypy.overrides]]
 module = ["google.*", "bs4.*"]
@@ -88,6 +88,6 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 addopts = "-ra --strict-markers"

@@ -31,7 +31,7 @@ either, install one first: `brew install uv` (recommended) or `brew install pyth
 Manual equivalent: `python3.12 -m venv .venv312 && .venv312/bin/pip install -e ".[dev]"`.
 In PyCharm / VS Code, select `.venv312/bin/python` as the project interpreter.
 PyCharm run configuration: *+ → Python*, interpreter `.venv312` (Python 3.12), **module**
-`seo_agent.runner`, working directory = project root (so `.env` is found), script parameters
+`src.runner`, working directory = project root (so `.env` is found), script parameters
 e.g. `--max-pages 20`, `--check-llm` or `--reasoning high`.
 
 Each run prints its `run_id` and writes everything to
@@ -79,7 +79,7 @@ Search Console to be measured instead of estimated.
 ## API
 
 ```bash
-uvicorn seo_agent.main:app --reload               # http://localhost:8000/docs
+uvicorn src.main:app --reload               # http://localhost:8000/docs
 curl -X POST localhost:8000/runs -H 'content-type: application/json' -d '{"site": "machinoai.in", "max_pages": 50}'
 curl localhost:8000/runs/<run_id>
 ```
@@ -115,8 +115,8 @@ seo_agent/
 ├── scripts/setup_env.sh    # create the Python 3.12 .venv312, install, run tests
 ├── alembic.ini, migrations/  # database schema (applied automatically when AUTO_MIGRATE=true)
 ├── Dockerfile, docker-compose.yml  # optional container setup
-├── src/seo_agent/
-│   ├── runner.py           # CLI entry point
+├── src/                    # the application package: imports are `from src.<module> import …`
+│   ├── runner.py           # CLI entry point (python -m src.runner, or `seo-agent`)
 │   ├── main.py             # FastAPI app
 │   ├── config.py           # typed settings — the only place env vars are read
 │   ├── api/                # HTTP routes and schemas

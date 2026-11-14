@@ -4,7 +4,7 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage
 from pydantic import BaseModel
 
-from seo_agent.agents.base import (
+from src.agents.base import (
     AgentOutputError,
     _invoke_validated,
     extract_json,

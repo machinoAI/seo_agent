@@ -4,10 +4,10 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage
 
-from seo_agent.agents.base import add_usage
-from seo_agent.config import Settings
-from seo_agent.llm import pricing
-from seo_agent.tools.reporting import cost_summary, render_markdown
+from src.agents.base import add_usage
+from src.config import Settings
+from src.llm import pricing
+from src.tools.reporting import cost_summary, render_markdown
 
 
 @pytest.fixture(autouse=True)

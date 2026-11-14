@@ -1,6 +1,6 @@
 import pytest
 
-from seo_agent.tools.http import FetchError, SafeHttpClient, _backoff, is_public_address
+from src.tools.http import FetchError, SafeHttpClient, _backoff, is_public_address
 
 
 @pytest.mark.parametrize(

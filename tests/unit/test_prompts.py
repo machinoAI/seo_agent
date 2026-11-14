@@ -2,8 +2,8 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from seo_agent.config import AgentName
-from seo_agent.prompts import AgentPrompt, PromptError, load_prompt, render_snippet
+from src.config import AgentName
+from src.prompts import AgentPrompt, PromptError, load_prompt, render_snippet
 
 
 @pytest.mark.parametrize("agent", list(AgentName))

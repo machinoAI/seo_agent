@@ -1,6 +1,6 @@
 from typing import Any
 
-from seo_agent.tools.technical_seo import crawler_access, find_issues, section_health
+from src.tools.technical_seo import crawler_access, find_issues, section_health
 
 HOME = "https://machinoai.in/"
 

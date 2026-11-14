@@ -4,9 +4,9 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
-from seo_agent.config import AgentLLMOverrides, AgentName, LLMProvider, Settings
-from seo_agent.llm import factory
-from seo_agent.llm.factory import (
+from src.config import AgentLLMOverrides, AgentName, LLMProvider, Settings
+from src.llm import factory
+from src.llm.factory import (
     DEFAULT_MODELS,
     LLMConfigurationError,
     chat_model_kwargs,

@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from seo_agent.config import get_settings
-from seo_agent.persistence.database import get_engine, get_session_factory
+from src.config import get_settings
+from src.persistence.database import get_engine, get_session_factory
 
 
 @pytest.fixture
@@ -17,7 +17,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     for cached in (get_settings, get_engine, get_session_factory):
         cached.cache_clear()
 
-    from seo_agent.main import create_app
+    from src.main import create_app
 
     with TestClient(create_app()) as test_client:  # runs migrations in the lifespan
         yield test_client

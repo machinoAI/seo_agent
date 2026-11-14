@@ -4,8 +4,8 @@ from uuid import uuid4
 
 import pytest
 
-from seo_agent.persistence.output_store import OutputStore
-from seo_agent.tools.base import (
+from src.persistence.output_store import OutputStore
+from src.tools.base import (
     ErrorKind,
     ToolFailure,
     ToolOutput,

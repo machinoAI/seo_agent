@@ -1,5 +1,5 @@
-from seo_agent.tools.performance import extract_pagespeed, select_priority_urls
-from seo_agent.tools.reporting import (
+from src.tools.performance import extract_pagespeed, select_priority_urls
+from src.tools.reporting import (
     action_plan_rows,
     finding_rows,
     page_rows,

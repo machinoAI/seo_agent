@@ -13,8 +13,8 @@ from pathlib import Path
 from alembic import context
 from sqlalchemy import create_engine, pool
 
-from seo_agent.config import get_settings
-from seo_agent.persistence.models import Base
+from src.config import get_settings
+from src.persistence.models import Base
 
 config = context.config
 if config.config_file_name is not None and config.attributes.get("configure_logging", True):

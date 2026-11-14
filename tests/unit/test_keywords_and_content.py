@@ -1,7 +1,7 @@
 from typing import Any
 
-from seo_agent.tools.content import match_topics
-from seo_agent.tools.keywords import (
+from src.tools.content import match_topics
+from src.tools.keywords import (
     SCORING_VERSION,
     expected_ctr,
     extract_topics,
